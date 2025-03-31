@@ -25,7 +25,7 @@ To run without root access, go to homebridge terminal and type ```sudo setcap ca
 To find your device uuid, use `hcitool lescan`, grab the device uuid, remove all ':' and use lowercase alpha characters
 
 ## Contribution
-This package is basen on the work of [Lylya](https://github.com/Lyliya) on the project [homebridge-ledstrip-ble](https://github.com/Lyliya/homebridge-ledstrip-ble/).
+This package is based on the work of [Lylya](https://github.com/Lyliya) on the project [homebridge-ledstrip-ble](https://github.com/Lyliya/homebridge-ledstrip-ble/).
 The new configuration parameters are based on the work of [user154lt](https://github.com/user154lt) on the project [ELK-BLEDOM-Command-Util](https://github.com/user154lt/ELK-BLEDOM-Command-Util).
 
 You can contribute by creating merge request, you can find a documentation of the BLE message used here : [Documentation](https://github.com/arduino12/ble_rgb_led_strip_controller/blob/master/README.md)
