@@ -1,11 +1,11 @@
 const noble = require("@abandonware/noble");
 
 function hslToRgb(h, s, l) {
-  var r, g, b;
-  if (s == 0) {
+  let r, g, b;
+  if (s === 0) {
     r = g = b = l;
   } else {
-    var hue2rgb = function hue2rgb(p, q, t) {
+    const hue2rgb = (p, q, t) => {
       if (t < 0) t += 1;
       if (t > 1) t -= 1;
       if (t < 1 / 6) return p + (q - p) * 6 * t;
@@ -13,8 +13,8 @@ function hslToRgb(h, s, l) {
       if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
       return p;
     };
-    var q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-    var p = 2 * l - q;
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
     r = hue2rgb(p, q, h + 1 / 3);
     g = hue2rgb(p, q, h);
     b = hue2rgb(p, q, h - 1 / 3);
@@ -36,6 +36,8 @@ module.exports = class Device {
     this.saturation = 0;
     this.l = 0.5;
     this.peripheral = undefined;
+    this.write = undefined;
+    this.connecting = false;
 
     noble.on("stateChange", (state) => {
       if (state === "poweredOn") {
@@ -51,26 +53,22 @@ module.exports = class Device {
       if (peripheral.uuid === this.uuid) {
         this.peripheral = peripheral;
         noble.stopScanning();
+        await this.connect();
       }
     });
   }
 
-  async connectAndGetWriteCharacteristics() {
-    if (!this.peripheral) {
-      log("Peripheral not found, starting scan...");
-      noble.startScanningAsync();
-      return;
-    }
-    log(`Attempting to connect to ${this.peripheral.uuid}...`);
+  async connect() {
+    if (!this.peripheral || this.connecting || this.connected || this.peripheral.state === 'connected') return;
+
+    this.connecting = true;
     try {
-      log("Calling connectAsync...");
+      log(`Attempting to connect to ${this.peripheral.uuid}...`);
       await this.peripheral.connectAsync();
       log("Connected successfully.");
       this.connected = true;
 
-      log("Discovering services and characteristics...");
       const { characteristics } = await this.peripheral.discoverSomeServicesAndCharacteristicsAsync(["fff0"], ["fff3"]);
-
       if (!characteristics || characteristics.length === 0) {
         log("No write characteristic found.");
         this.connected = false;
@@ -82,7 +80,9 @@ module.exports = class Device {
     } catch (err) {
       log(`Connection error: ${err.message}`);
       this.connected = false;
-      setTimeout(() => this.connectAndGetWriteCharacteristics(), 5000);
+      setTimeout(() => this.connect(), 5000);
+    } finally {
+      this.connecting = false;
     }
   }
 
@@ -106,7 +106,7 @@ module.exports = class Device {
   })();
 
   async set_power(status) {
-    if (!this.connected) await this.connectAndGetWriteCharacteristics();
+    await this.connect();
     if (this.write) {
       const buffer = Buffer.from(`7e0404${status ? "01" : "00"}00${status ? "01" : "00"}ff00ef`, "hex");
       log(`Sending power command: ${buffer.toString("hex")}`);
@@ -116,14 +116,13 @@ module.exports = class Device {
         this.debounceDisconnect();
       } catch (err) {
         log(`Error setting power: ${err.message}`);
-        setTimeout(() => this.set_power(status), 2000);
       }
     }
   }
 
   async set_brightness(level) {
     if (level > 100 || level < 0) return;
-    if (!this.connected) await this.connectAndGetWriteCharacteristics();
+    await this.connect();
     if (this.write) {
       const level_hex = ("0" + level.toString(16)).slice(-2);
       const buffer = Buffer.from(`7e0401${level_hex}ffffff00ef`, "hex");
@@ -134,13 +133,12 @@ module.exports = class Device {
         this.debounceDisconnect();
       } catch (err) {
         log(`Error setting brightness: ${err.message}`);
-        setTimeout(() => this.set_brightness(level), 2000);
       }
     }
   }
 
   async set_rgb(r, g, b) {
-    if (!this.connected) await this.connectAndGetWriteCharacteristics();
+    await this.connect();
     if (this.write) {
       const rhex = ("0" + r.toString(16)).slice(-2);
       const ghex = ("0" + g.toString(16)).slice(-2);
@@ -152,28 +150,25 @@ module.exports = class Device {
         this.debounceDisconnect();
       } catch (err) {
         log(`Error setting RGB: ${err.message}`);
-        setTimeout(() => this.set_rgb(r, g, b), 2000);
       }
     }
   }
 
   async set_hue(hue) {
-    if (!this.connected) await this.connectAndGetWriteCharacteristics();
+    await this.connect();
     if (this.write) {
       this.hue = hue;
       const rgb = hslToRgb(hue / 360, this.saturation / 100, this.l);
-      this.set_rgb(rgb[0], rgb[1], rgb[2]);
-      this.debounceDisconnect();
+      await this.set_rgb(rgb[0], rgb[1], rgb[2]);
     }
   }
 
   async set_saturation(saturation) {
-    if (!this.connected) await this.connectAndGetWriteCharacteristics();
+    await this.connect();
     if (this.write) {
       this.saturation = saturation;
       const rgb = hslToRgb(this.hue / 360, saturation / 100, this.l);
-      this.set_rgb(rgb[0], rgb[1], rgb[2]);
-      this.debounceDisconnect();
+      await this.set_rgb(rgb[0], rgb[1], rgb[2]);
     }
   }
 
@@ -181,8 +176,7 @@ module.exports = class Device {
     return new Promise((resolve, reject) => {
       this.write.write(buffer, true, (err) => {
         if (err) {
-          log(`Write error: ${err.message}, retrying in 2s...`);
-          setTimeout(() => this.writeAsync(buffer), 2000);
+          log(`Write error: ${err.message}`);
           reject(err);
         } else {
           resolve();
