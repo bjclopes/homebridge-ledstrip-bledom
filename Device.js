@@ -23,7 +23,7 @@ function hslToRgb(h, s, l) {
 }
 
 function log(message) {
-  console.log(`[@bjclopes/homebridge-ledstrip-bledom]:`, message);
+  console.log(`[homebridge-ledstrip]:`, message);
 }
 
 module.exports = class Device {
@@ -38,13 +38,14 @@ module.exports = class Device {
     this.peripheral = undefined;
     this.write = undefined;
     this.connecting = false;
+    this.commandQueue = Promise.resolve();
 
     noble.on("stateChange", (state) => {
       if (state === "poweredOn") {
         noble.startScanningAsync();
       } else {
         if (this.peripheral) this.peripheral.disconnect();
-        this.connected = false;
+        this._resetState();
       }
     });
 
@@ -53,34 +54,90 @@ module.exports = class Device {
       if (peripheral.uuid === this.uuid) {
         this.peripheral = peripheral;
         noble.stopScanning();
-        await this.connect();
+        await this.enqueue(() => this.connect());
       }
     });
   }
 
-  async connect() {
-    if (!this.peripheral || this.connecting || this.connected || this.peripheral.state === 'connected') return;
+  _resetState() {
+    this.connected = false;
+    this.connecting = false;
+    this.peripheral = undefined;
+    this.write = undefined;
+  }
+
+  enqueue(task) {
+    this.commandQueue = this.commandQueue.then(task).catch(err => {
+      log(`Command queue error: ${err.message}`);
+    });
+    return this.commandQueue;
+  }
+
+  async connect(retries = 5) {
+    if (this.connecting || this.connected) return;
+
+    if (!this.peripheral) {
+      log("Peripheral missing, scanning...");
+      const found = await new Promise((resolve) => {
+        const onDiscover = (peripheral) => {
+          if (peripheral.uuid === this.uuid) {
+            log(`Re-discovered peripheral: ${peripheral.uuid}`);
+            noble.removeListener("discover", onDiscover);
+            noble.stopScanning();
+            this.peripheral = peripheral;
+            resolve(true);
+          }
+        };
+        noble.on("discover", onDiscover);
+        noble.startScanning();
+
+        setTimeout(() => {
+          noble.removeListener("discover", onDiscover);
+          noble.stopScanning();
+          resolve(false);
+        }, 5000); // Scan timeout
+      });
+
+      if (!found) {
+        log("Peripheral not found during scan.");
+        return;
+      }
+    }
 
     this.connecting = true;
     try {
       log(`Attempting to connect to ${this.peripheral.uuid}...`);
       await this.peripheral.connectAsync();
+      await new Promise((res) => setTimeout(res, 500));
       log("Connected successfully.");
-      this.connected = true;
 
-      const { characteristics } = await this.peripheral.discoverSomeServicesAndCharacteristicsAsync(["fff0"], ["fff3"]);
+      const { characteristics } = await this.peripheral.discoverSomeServicesAndCharacteristicsAsync(
+        ["fff0"],
+        ["fff3"]
+      );
+
       if (!characteristics || characteristics.length === 0) {
-        log("No write characteristic found.");
-        this.connected = false;
-        return;
+        throw new Error("Write characteristic not found.");
       }
 
       this.write = characteristics[0];
+      this.connected = true;
       log("Write characteristic assigned.");
+
+      this.peripheral.once("disconnect", () => {
+        log("Peripheral disconnected.");
+        this._resetState();
+      });
     } catch (err) {
       log(`Connection error: ${err.message}`);
-      this.connected = false;
-      setTimeout(() => this.connect(), 5000);
+      this._resetState();
+      if (retries > 0) {
+        log(`Retrying connect (${retries} retries left)...`);
+        await new Promise((res) => setTimeout(res, 1000));
+        return this.connect(retries - 1);
+      } else {
+        log("Max connection retries reached.");
+      }
     } finally {
       this.connecting = false;
     }
@@ -96,7 +153,7 @@ module.exports = class Device {
           try {
             await this.peripheral.disconnectAsync();
             log("Disconnected successfully.");
-            this.connected = false;
+            this._resetState();
           } catch (err) {
             log(`Error during disconnect: ${err.message}`);
           }
@@ -105,75 +162,63 @@ module.exports = class Device {
     };
   })();
 
-  async set_power(status) {
-    await this.connect();
-    if (this.write) {
-      const buffer = Buffer.from(`7e0404${status ? "01" : "00"}00${status ? "01" : "00"}ff00ef`, "hex");
-      log(`Sending power command: ${buffer.toString("hex")}`);
-      try {
-        await this.writeAsync(buffer);
-        this.power = status;
-        this.debounceDisconnect();
-      } catch (err) {
-        log(`Error setting power: ${err.message}`);
-      }
+  async waitForWriteReady(retries = 10, delay = 300) {
+    for (let i = 0; i < retries; i++) {
+      if (this.write) return;
+      await new Promise(res => setTimeout(res, delay));
     }
+    throw new Error("Write characteristic is not ready after multiple retries.");
+  }
+
+  async writeCommand(buffer) {
+    return this.enqueue(async () => {
+      await this.connect();
+      await this.waitForWriteReady();
+      log(`Sending command: ${buffer.toString("hex")}`);
+      await this.writeAsync(buffer);
+      this.debounceDisconnect();
+    });
+  }
+
+  async set_power(status) {
+    const buffer = Buffer.from(`7e0404${status ? "01" : "00"}00${status ? "01" : "00"}ff00ef`, "hex");
+    this.power = status;
+    return this.writeCommand(buffer);
   }
 
   async set_brightness(level) {
     if (level > 100 || level < 0) return;
-    await this.connect();
-    if (this.write) {
-      const level_hex = ("0" + level.toString(16)).slice(-2);
-      const buffer = Buffer.from(`7e0401${level_hex}ffffff00ef`, "hex");
-      log(`Sending brightness command: ${buffer.toString("hex")}`);
-      try {
-        await this.writeAsync(buffer);
-        this.brightness = level;
-        this.debounceDisconnect();
-      } catch (err) {
-        log(`Error setting brightness: ${err.message}`);
-      }
-    }
+    const level_hex = ("0" + level.toString(16)).slice(-2);
+    const buffer = Buffer.from(`7e0401${level_hex}ffffff00ef`, "hex");
+    this.brightness = level;
+    return this.writeCommand(buffer);
   }
 
   async set_rgb(r, g, b) {
-    await this.connect();
-    if (this.write) {
-      const rhex = ("0" + r.toString(16)).slice(-2);
-      const ghex = ("0" + g.toString(16)).slice(-2);
-      const bhex = ("0" + b.toString(16)).slice(-2);
-      const buffer = Buffer.from(`7e070503${rhex}${ghex}${bhex}10ef`, "hex");
-      log(`Sending RGB command: ${buffer.toString("hex")}`);
-      try {
-        await this.writeAsync(buffer);
-        this.debounceDisconnect();
-      } catch (err) {
-        log(`Error setting RGB: ${err.message}`);
-      }
-    }
+    const rhex = ("0" + r.toString(16)).slice(-2);
+    const ghex = ("0" + g.toString(16)).slice(-2);
+    const bhex = ("0" + b.toString(16)).slice(-2);
+    const buffer = Buffer.from(`7e070503${rhex}${ghex}${bhex}10ef`, "hex");
+    return this.writeCommand(buffer);
   }
 
   async set_hue(hue) {
-    await this.connect();
-    if (this.write) {
-      this.hue = hue;
-      const rgb = hslToRgb(hue / 360, this.saturation / 100, this.l);
-      await this.set_rgb(rgb[0], rgb[1], rgb[2]);
-    }
+    this.hue = hue;
+    const rgb = hslToRgb(hue / 360, this.saturation / 100, this.l);
+    return this.set_rgb(rgb[0], rgb[1], rgb[2]);
   }
 
   async set_saturation(saturation) {
-    await this.connect();
-    if (this.write) {
-      this.saturation = saturation;
-      const rgb = hslToRgb(this.hue / 360, saturation / 100, this.l);
-      await this.set_rgb(rgb[0], rgb[1], rgb[2]);
-    }
+    this.saturation = saturation;
+    const rgb = hslToRgb(this.hue / 360, saturation / 100, this.l);
+    return this.set_rgb(rgb[0], rgb[1], rgb[2]);
   }
 
   async writeAsync(buffer) {
     return new Promise((resolve, reject) => {
+      if (!this.write) {
+        return reject(new Error("Write characteristic is undefined."));
+      }
       this.write.write(buffer, true, (err) => {
         if (err) {
           log(`Write error: ${err.message}`);
