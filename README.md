@@ -9,12 +9,11 @@ You need to have a bluetooth device. Check using `hcitool dev` command. You may 
 
 To run without root access, go to homebridge terminal and type ```sudo setcap cap_net_raw+eip $(eval readlink -f `which node`)```
 
-
-From version 2.0.11, the plugin is being run in a child bridge and, as a fail-safe, the child bridge restarts if the peripheral becomes unreacheable.
-
 ## Installation
 
 `npm i @bjclopes/homebridge-ledstrip-bledom`
+
+From version 2.0.11, the plugin is being run in a child bridge and, as a fail-safe, the child bridge restarts if the peripheral becomes unreacheable.
 
 ## Configuration
 ```js
