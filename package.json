@@ -1,6 +1,6 @@
 {
     "name": "@bjclopes/homebridge-ledstrip-bledom",
-    "version": "1.9.3",
+    "version": "2.0.11",
     "displayName": "Homebridge Ledstrip BLEDOM",
     "description": "",
     "main": "index.js",
