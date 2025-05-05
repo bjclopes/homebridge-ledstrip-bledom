@@ -6,8 +6,9 @@ Control On/Off, Hue, Saturation and Brightness.
 
 ## Prerequisite
 You need to have a bluetooth device. Check using `hcitool dev` command. You may also need root access with Homebridge
-
 To run without root access, go to homebridge terminal and type ```sudo setcap cap_net_raw+eip $(eval readlink -f `which node`)```
+
+From version 2.0.11, the plugin is being run in a child bridge and, as a fail-safe, the child bridge restarts if the peripheral becomes unreacheable.
 
 ## Installation
 
